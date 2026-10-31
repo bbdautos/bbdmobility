@@ -390,6 +390,8 @@ export interface IRider extends Document {
   bikeColor?: string;
   rating?: number;
   currentLocation?: string;
+  failedLoginAttempts?: number;
+  lockUntil?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -413,7 +415,9 @@ const RiderSchema = new Schema<IRider>({
   bikeBrand: { type: String, default: 'Honda' },
   bikeColor: { type: String, default: 'Red' },
   rating: { type: Number, default: 4.9 },
-  currentLocation: { type: String, default: 'Lagos, Nigeria' }
+  currentLocation: { type: String, default: 'Lagos, Nigeria' },
+  failedLoginAttempts: { type: Number, default: 0 },
+  lockUntil: { type: Date, default: null }
 }, { timestamps: true });
 
 /* ==========================================================================
@@ -428,6 +432,8 @@ export interface IPlatformUser extends Document {
   role: 'Admin' | 'Support' | 'Finance' | 'Customer';
   status: 'Active' | 'Suspended' | 'Inactive';
   lastLogin?: Date;
+  failedLoginAttempts?: number;
+  lockUntil?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -440,7 +446,9 @@ const UserSchema = new Schema<IPlatformUser>({
   passwordHash: { type: String, required: true },
   role: { type: String, enum: ['Admin', 'Support', 'Finance', 'Customer'], default: 'Support', index: true },
   status: { type: String, enum: ['Active', 'Suspended', 'Inactive'], default: 'Active' },
-  lastLogin: { type: Date }
+  lastLogin: { type: Date },
+  failedLoginAttempts: { type: Number, default: 0 },
+  lockUntil: { type: Date, default: null }
 }, { timestamps: true });
 
 /* ==========================================================================

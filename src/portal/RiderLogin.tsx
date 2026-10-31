@@ -17,7 +17,7 @@ import {
 import { useNigerianGreeting } from './timeGreeting';
 
 interface RiderLoginProps {
-  onLoginSuccess: (riderData?: { name: string; phone: string; riderId: string; email?: string }) => void;
+  onLoginSuccess: (riderData?: { name: string; phone: string; riderId: string; email?: string }, token?: string) => void;
   onNavigateHome: () => void;
   onSwitchToAdminLogin?: () => void;
 }
@@ -99,7 +99,7 @@ export const RiderLogin: React.FC<RiderLoginProps> = ({
         phone: data.rider.phone,
         email: data.rider.email,
         riderId: data.rider.riderId
-      });
+      }, data.token);
     } catch {
       setError('Network connection error. Please verify your internet connection and retry.');
     } finally {
@@ -154,7 +154,7 @@ export const RiderLogin: React.FC<RiderLoginProps> = ({
         phone: mustChangePinRider.phone,
         email: mustChangePinRider.email,
         riderId: mustChangePinRider.riderId
-      });
+      }, activeToken);
     } catch {
       setChangePinError('Network connection error updating PIN.');
     } finally {

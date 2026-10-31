@@ -237,8 +237,10 @@ export function App() {
       />
     ) : (
       <AdminLogin
-        onLoginSuccess={() => {
-          localStorage.setItem('bbd_admin_token', 'admin-session-active');
+        onLoginSuccess={(token) => {
+          if (token) {
+            localStorage.setItem('bbd_admin_token', token);
+          }
           sessionStorage.setItem('bbd_admin_just_logged_in', 'true');
           setAdminLoggedIn(true);
         }}
@@ -261,12 +263,14 @@ export function App() {
       />
     ) : (
       <RiderLogin
-        onLoginSuccess={(rData) => {
+        onLoginSuccess={(rData, token) => {
           if (rData) {
             setRiderUser(rData);
             localStorage.setItem('bbd_rider_user', JSON.stringify(rData));
           }
-          localStorage.setItem('bbd_rider_token', 'rider-session-active');
+          if (token) {
+            localStorage.setItem('bbd_rider_token', token);
+          }
           sessionStorage.setItem('bbd_rider_just_logged_in', 'true');
           setRiderLoggedIn(true);
         }}

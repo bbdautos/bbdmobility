@@ -20,6 +20,18 @@ import {
 
 const BASE_URL = '/api/portal';
 
+export function authFetch(url: string, init?: RequestInit): Promise<Response> {
+  const token = localStorage.getItem('bbd_admin_token') || localStorage.getItem('bbd_rider_token');
+  const headers = new Headers(init?.headers || {});
+  if (!headers.has('Content-Type') && init?.method && init.method !== 'GET') {
+    headers.set('Content-Type', 'application/json');
+  }
+  if (token && !headers.has('Authorization') && token !== 'admin-session-active' && token !== 'rider-session-active') {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  return fetch(url, { ...init, headers });
+}
+
 /* ==========================================================================
    DATA NORMALIZERS (Ensures UI Never Throws TypeErrors on MongoDB Objects)
    ========================================================================== */
@@ -160,7 +172,7 @@ export const portalApi = {
   // 1. Dashboard
   async getDashboard() {
     try {
-      const res = await fetch(`${BASE_URL}/dashboard`);
+      const res = await authFetch(`${BASE_URL}/dashboard`);
       if (res.ok) return await res.json();
     } catch {}
     const bookings = (getStoredData<Booking[]>('bookings', []) || []).map(normalizeBooking);
@@ -178,7 +190,7 @@ export const portalApi = {
   // 2. Bookings
   async getBookings(): Promise<Booking[]> {
     try {
-      const res = await fetch(`${BASE_URL}/bookings`);
+      const res = await authFetch(`${BASE_URL}/bookings`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data.bookings)) {
@@ -194,7 +206,7 @@ export const portalApi = {
 
   async updateBooking(ref: string, updates: Partial<Booking>): Promise<Booking | null> {
     try {
-      await fetch(`${BASE_URL}/bookings/${ref}`, {
+      await authFetch(`${BASE_URL}/bookings/${ref}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates),
@@ -209,7 +221,7 @@ export const portalApi = {
 
   async assignRider(ref: string, riderId: string, note?: string): Promise<{ success: boolean; message?: string; booking?: Booking; error?: string }> {
     try {
-      const res = await fetch(`${BASE_URL}/bookings/${ref}/assign`, {
+      const res = await authFetch(`${BASE_URL}/bookings/${ref}/assign`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ riderId, note }),
@@ -231,7 +243,7 @@ export const portalApi = {
 
   async cancelBooking(ref: string, reason: string): Promise<{ success: boolean; message?: string; booking?: Booking; error?: string }> {
     try {
-      const res = await fetch(`${BASE_URL}/bookings/${ref}/cancel`, {
+      const res = await authFetch(`${BASE_URL}/bookings/${ref}/cancel`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason }),
@@ -250,7 +262,7 @@ export const portalApi = {
 
   async deleteBooking(ref: string): Promise<{ success: boolean; message?: string; error?: string }> {
     try {
-      const res = await fetch(`${BASE_URL}/bookings/${ref}`, { method: 'DELETE' });
+      const res = await authFetch(`${BASE_URL}/bookings/${ref}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) return { success: false, error: data.error || 'Failed to delete booking.' };
       const bookings = (getStoredData<any[]>('bookings', []) || []).map(normalizeBooking);
@@ -264,7 +276,7 @@ export const portalApi = {
 
   async verifyOtp(ref: string, otp: string, paymentStatus?: 'Paid' | 'Unpaid'): Promise<{ success: boolean; message: string }> {
     try {
-      const res = await fetch(`${BASE_URL}/bookings/${ref}/verify-otp`, {
+      const res = await authFetch(`${BASE_URL}/bookings/${ref}/verify-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ otp, paymentStatus }),
@@ -295,7 +307,7 @@ export const portalApi = {
 
   async acceptAssignment(ref: string, riderId?: string): Promise<{ success: boolean; message?: string; booking?: Booking; error?: string }> {
     try {
-      const res = await fetch(`${BASE_URL}/bookings/${ref}/accept`, {
+      const res = await authFetch(`${BASE_URL}/bookings/${ref}/accept`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ riderId }),
@@ -314,7 +326,7 @@ export const portalApi = {
 
   async uploadProofOfPickup(ref: string, photo: string, riderId?: string): Promise<{ success: boolean; url?: string; booking?: Booking; error?: string }> {
     try {
-      const res = await fetch(`${BASE_URL}/bookings/${ref}/proof-of-pickup`, {
+      const res = await authFetch(`${BASE_URL}/bookings/${ref}/proof-of-pickup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ photo, riderId }),
@@ -333,7 +345,7 @@ export const portalApi = {
 
   async uploadProofOfDelivery(ref: string, photo: string, riderId?: string): Promise<{ success: boolean; url?: string; booking?: Booking; error?: string }> {
     try {
-      const res = await fetch(`${BASE_URL}/bookings/${ref}/proof-of-delivery`, {
+      const res = await authFetch(`${BASE_URL}/bookings/${ref}/proof-of-delivery`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ photo, riderId }),
@@ -353,7 +365,7 @@ export const portalApi = {
   // 3. Riders
   async getRiders(): Promise<Rider[]> {
     try {
-      const res = await fetch(`${BASE_URL}/riders`);
+      const res = await authFetch(`${BASE_URL}/riders`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data.riders)) {
@@ -369,7 +381,7 @@ export const portalApi = {
 
   async createRider(rider: Partial<Rider> & { pin?: string; password?: string; plateNumber?: string }): Promise<{ success: boolean; rider: Rider; credentials?: any; error?: string }> {
     try {
-      const res = await fetch(`${BASE_URL}/riders`, {
+      const res = await authFetch(`${BASE_URL}/riders`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rider),
@@ -410,7 +422,7 @@ export const portalApi = {
 
   async updateRider(id: string, updates: Partial<Rider>): Promise<void> {
     try {
-      await fetch(`${BASE_URL}/riders/${id}`, {
+      await authFetch(`${BASE_URL}/riders/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates),
@@ -424,7 +436,7 @@ export const portalApi = {
 
   async deleteRider(id: string): Promise<{ success: boolean; message?: string; error?: string }> {
     try {
-      const res = await fetch(`${BASE_URL}/riders/${id}`, { method: 'DELETE' });
+      const res = await authFetch(`${BASE_URL}/riders/${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) return { success: false, error: data.error || 'Failed to delete rider.' };
       const riders = (getStoredData<any[]>('riders', []) || []).map(normalizeRider);
@@ -438,7 +450,7 @@ export const portalApi = {
 
   async changeRiderPassword(id: string, pinOrPassword: string): Promise<{ success: boolean; message?: string; error?: string; password?: string; pin?: string }> {
     try {
-      const res = await fetch(`${BASE_URL}/riders/${id}/change-pin`, {
+      const res = await authFetch(`${BASE_URL}/riders/${id}/change-pin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pin: pinOrPassword, password: pinOrPassword }),
@@ -473,7 +485,7 @@ export const portalApi = {
   // 4. Customers
   async getCustomers(): Promise<Customer[]> {
     try {
-      const res = await fetch(`${BASE_URL}/customers`);
+      const res = await authFetch(`${BASE_URL}/customers`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data.customers)) {
@@ -489,7 +501,7 @@ export const portalApi = {
 
   async updateCustomer(id: string, updates: Partial<Customer>): Promise<{ success: boolean; customer?: Customer; error?: string }> {
     try {
-      const res = await fetch(`${BASE_URL}/customers/${id}`, {
+      const res = await authFetch(`${BASE_URL}/customers/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates),
@@ -507,7 +519,7 @@ export const portalApi = {
 
   async deleteCustomer(id: string): Promise<{ success: boolean; message?: string; anonymized?: boolean; error?: string }> {
     try {
-      const res = await fetch(`${BASE_URL}/customers/${id}`, { method: 'DELETE' });
+      const res = await authFetch(`${BASE_URL}/customers/${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) return { success: false, error: data.error || 'Failed to delete customer.' };
       const customers = (getStoredData<any[]>('customers', []) || []).map(normalizeCustomer);
@@ -527,7 +539,7 @@ export const portalApi = {
   // 5. Users
   async getUsers(): Promise<PlatformUser[]> {
     try {
-      const res = await fetch(`${BASE_URL}/users`);
+      const res = await authFetch(`${BASE_URL}/users`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data.users)) {
@@ -543,7 +555,7 @@ export const portalApi = {
 
   async createUser(user: Partial<PlatformUser>): Promise<PlatformUser> {
     try {
-      const res = await fetch(`${BASE_URL}/users`, {
+      const res = await authFetch(`${BASE_URL}/users`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(user),
@@ -573,7 +585,7 @@ export const portalApi = {
 
   async deleteUser(id: string): Promise<{ success: boolean; message?: string; error?: string }> {
     try {
-      const res = await fetch(`${BASE_URL}/users/${id}`, { method: 'DELETE' });
+      const res = await authFetch(`${BASE_URL}/users/${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) return { success: false, error: data.error || 'Failed to delete user.' };
       const users = (getStoredData<any[]>('users', []) || []).map(normalizeUser);
@@ -587,7 +599,7 @@ export const portalApi = {
 
   async changeUserPassword(id: string, password: string): Promise<{ success: boolean; message?: string; error?: string; password?: string }> {
     try {
-      const res = await fetch(`${BASE_URL}/users/${id}/change-password`, {
+      const res = await authFetch(`${BASE_URL}/users/${id}/change-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password }),
@@ -602,7 +614,7 @@ export const portalApi = {
 
   async updateUser(id: string, updates: Partial<PlatformUser>): Promise<{ success: boolean; user?: PlatformUser; error?: string }> {
     try {
-      const res = await fetch(`${BASE_URL}/users/${id}`, {
+      const res = await authFetch(`${BASE_URL}/users/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates),
@@ -621,7 +633,7 @@ export const portalApi = {
   // 6. Payments
   async getPayments(): Promise<PaymentRecord[]> {
     try {
-      const res = await fetch(`${BASE_URL}/payments`);
+      const res = await authFetch(`${BASE_URL}/payments`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data.payments)) {
@@ -637,7 +649,7 @@ export const portalApi = {
 
   async recordPayment(payment: Partial<PaymentRecord>): Promise<{ payment: PaymentRecord; booking?: Booking }> {
     try {
-      const res = await fetch(`${BASE_URL}/payments`, {
+      const res = await authFetch(`${BASE_URL}/payments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payment),
@@ -696,7 +708,7 @@ export const portalApi = {
 
   async updatePayment(id: string, payment: Partial<PaymentRecord>): Promise<{ success: boolean; payment?: PaymentRecord; booking?: Booking; message?: string; error?: string }> {
     try {
-      const res = await fetch(`${BASE_URL}/payments/${id}`, {
+      const res = await authFetch(`${BASE_URL}/payments/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payment),
@@ -723,7 +735,7 @@ export const portalApi = {
 
   async deletePayment(id: string): Promise<{ success: boolean; booking?: Booking; message?: string; error?: string }> {
     try {
-      const res = await fetch(`${BASE_URL}/payments/${id}`, {
+      const res = await authFetch(`${BASE_URL}/payments/${id}`, {
         method: 'DELETE',
       });
       const data = await res.json();
@@ -746,7 +758,7 @@ export const portalApi = {
   // 7. Settings
   async getSettings(): Promise<GeneralSettings> {
     try {
-      const res = await fetch(`${BASE_URL}/settings`);
+      const res = await authFetch(`${BASE_URL}/settings`);
       if (res.ok) {
         const data = await res.json();
         setStoredData('settings', data);
@@ -758,7 +770,7 @@ export const portalApi = {
 
   async updateSettings(settings: Partial<GeneralSettings>): Promise<void> {
     try {
-      await fetch(`${BASE_URL}/settings`, {
+      await authFetch(`${BASE_URL}/settings`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings),
@@ -773,7 +785,7 @@ export const portalApi = {
   // 8. Notifications
   async getNotifications(): Promise<{ notifications: AdminNotification[]; unreadCount: number }> {
     try {
-      const res = await fetch(`${BASE_URL}/notifications`);
+      const res = await authFetch(`${BASE_URL}/notifications`);
       if (res.ok) {
         const data = await res.json();
         return {
@@ -787,7 +799,7 @@ export const portalApi = {
 
   async markAllNotificationsRead(): Promise<boolean> {
     try {
-      const res = await fetch(`${BASE_URL}/notifications/mark-all-read`, { method: 'POST' });
+      const res = await authFetch(`${BASE_URL}/notifications/mark-all-read`, { method: 'POST' });
       return res.ok;
     } catch {
       return false;
@@ -796,7 +808,7 @@ export const portalApi = {
 
   async markNotificationRead(id: string): Promise<boolean> {
     try {
-      const res = await fetch(`${BASE_URL}/notifications/${id}/read`, { method: 'PATCH' });
+      const res = await authFetch(`${BASE_URL}/notifications/${id}/read`, { method: 'PATCH' });
       return res.ok;
     } catch {
       return false;
@@ -805,7 +817,7 @@ export const portalApi = {
 
   async clearNotifications(): Promise<boolean> {
     try {
-      const res = await fetch(`${BASE_URL}/notifications`, { method: 'DELETE' });
+      const res = await authFetch(`${BASE_URL}/notifications`, { method: 'DELETE' });
       return res.ok;
     } catch {
       return false;

@@ -17,7 +17,7 @@ import { portalApi } from './api';
 import { useNigerianGreeting } from './timeGreeting';
 
 interface AdminLoginProps {
-  onLoginSuccess: () => void;
+  onLoginSuccess: (token?: string) => void;
   onNavigateHome: () => void;
   onSwitchToRiderLogin?: () => void;
 }
@@ -52,7 +52,7 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({
     try {
       const res = await portalApi.login(cleanEmail, password);
       if (res.success) {
-        onLoginSuccess();
+        onLoginSuccess(res.token);
       } else {
         setError(res.error || 'Invalid credentials. Access denied.');
       }

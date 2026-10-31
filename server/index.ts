@@ -35,6 +35,14 @@ import { emailService } from './emailService.ts';
 import { kudiSmsService } from './kudiSmsService.ts';
 import {
   securityProtectionMiddleware,
+  securityHeadersMiddleware,
+  exposedFileProtectionMiddleware,
+  authRateLimiter,
+  getClientIp,
+  MAX_FAILED_LOGIN_ATTEMPTS,
+  LOCKOUT_DURATION_MS,
+  LOCKOUT_DURATION_MINUTES,
+  checkAccountLockout,
   sanitizeString,
   validateEmail,
   validatePhone
@@ -46,9 +54,45 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 3001;
 
-app.use(cors());
+// 1. Disable technology fingerprinting
+app.disable('x-powered-by');
+
+// 2. OWASP Security Headers (CSP, HSTS, X-Frame-Options, X-Content-Type-Options)
+app.use(securityHeadersMiddleware);
+
+// 3. Block unauthorized scans for .env, .git, or sensitive server files
+app.use(exposedFileProtectionMiddleware);
+
+// 4. Configurable Strict CORS Policy
+const allowedOrigins = [
+  'https://bbdmobility.com.ng',
+  'https://www.bbdmobility.com.ng',
+  process.env.APP_URL,
+  process.env.FRONTEND_URL
+].filter(Boolean) as string[];
+
+const corsOptions: cors.CorsOptions = {
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (process.env.NODE_ENV !== 'production') return callback(null, true);
+    if (origin.includes('localhost') || origin.includes('127.0.0.1')) return callback(null, true);
+
+    const isAllowed = allowedOrigins.some(o => origin === o || origin.endsWith('.vercel.app') || origin.endsWith('bbdmobility.com.ng'));
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      callback(new Error('CORS: Origin not authorized by BBD Mobility security policy.'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'x-test-suite'],
+  maxAge: 86400,
+};
+app.use(cors(corsOptions));
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ limit: '25mb', extended: true }));
+
 // Global SQL & NoSQL Injection Protection + XSS Sanitizer
 app.use(securityProtectionMiddleware);
 
@@ -191,8 +235,8 @@ function getNigerianGreeting(): 'Good morning' | 'Good afternoon' | 'Good evenin
    AUTHENTICATION ENDPOINTS
    ========================================================================== */
 
-// 1. Admin & Staff Login
-app.post('/api/auth/login', async (req: Request, res: Response) => {
+// 1. Admin & Staff Login (With IP Rate Limiting & Account Lockout Protection)
+app.post('/api/auth/login', authRateLimiter, async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body || {};
     if (!email || !password) {
@@ -210,6 +254,26 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'Invalid email or password.' });
     }
 
+    // Check account lockout status
+    const lockout = checkAccountLockout(user);
+    if (lockout.isLocked) {
+      await recordAuditLog({
+        actorId: user.userId,
+        actorName: user.name,
+        actorRole: user.role,
+        action: 'ACCOUNT_LOCKOUT_BLOCKED',
+        affectedEntity: 'User',
+        entityRef: user.userId,
+        ipAddress: getClientIp(req),
+        metadata: { remainingMinutes: lockout.remainingMinutes }
+      });
+      return res.status(423).json({
+        error: `Account is temporarily locked due to too many failed login attempts. Please try again in ${lockout.remainingMinutes} minute${lockout.remainingMinutes > 1 ? 's' : ''} or contact your system administrator.`,
+        locked: true,
+        remainingMinutes: lockout.remainingMinutes
+      });
+    }
+
     // Security Rule: info@bbdautosng.com is the EXCLUSIVE system administrator allowed to authenticate as Admin
     if (user.role === 'Admin' && cleanEmail !== 'info@bbdautosng.com') {
       return res.status(401).json({ error: 'Access denied: Unauthorized administrator account.' });
@@ -221,9 +285,42 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
 
     const isMatch = await comparePassword(String(password), user.passwordHash);
     if (!isMatch) {
-      return res.status(401).json({ error: 'Invalid email or password.' });
+      const attempts = (user.failedLoginAttempts || 0) + 1;
+      user.failedLoginAttempts = attempts;
+
+      if (attempts >= MAX_FAILED_LOGIN_ATTEMPTS) {
+        user.lockUntil = new Date(Date.now() + LOCKOUT_DURATION_MS);
+        await user.save();
+
+        await recordAuditLog({
+          actorId: user.userId,
+          actorName: user.name,
+          actorRole: user.role,
+          action: 'ACCOUNT_LOCKED',
+          affectedEntity: 'User',
+          entityRef: user.userId,
+          ipAddress: getClientIp(req),
+          metadata: { failedAttempts: attempts, durationMinutes: LOCKOUT_DURATION_MINUTES }
+        });
+
+        return res.status(423).json({
+          error: `Account has been locked for ${LOCKOUT_DURATION_MINUTES} minutes due to ${MAX_FAILED_LOGIN_ATTEMPTS} consecutive failed login attempts.`,
+          locked: true,
+          remainingMinutes: LOCKOUT_DURATION_MINUTES
+        });
+      } else {
+        await user.save();
+        const remainingAttempts = MAX_FAILED_LOGIN_ATTEMPTS - attempts;
+        return res.status(401).json({
+          error: `Invalid email or password. ${remainingAttempts} attempt${remainingAttempts > 1 ? 's' : ''} remaining before temporary account lockout.`,
+          remainingAttempts
+        });
+      }
     }
 
+    // Login successful: reset failed login attempts & unlock
+    user.failedLoginAttempts = 0;
+    user.lockUntil = null;
     user.lastLogin = new Date();
     await user.save();
 
@@ -241,7 +338,7 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
       action: 'ADMIN_LOGIN_SUCCESS',
       affectedEntity: 'User',
       entityRef: user.userId,
-      ipAddress: req.ip,
+      ipAddress: getClientIp(req),
     });
 
     const greeting = getNigerianGreeting();
@@ -259,12 +356,13 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
       },
     });
   } catch (err: any) {
-    return res.status(500).json({ error: 'Login service error: ' + err.message });
+    const isProd = process.env.NODE_ENV === 'production';
+    return res.status(500).json({ error: isProd ? 'Login service error occurred.' : 'Login service error: ' + err.message });
   }
 });
 
-// 2. Rider Login
-app.post('/api/auth/rider-login', async (req: Request, res: Response) => {
+// 2. Rider Login (With IP Rate Limiting & Account Lockout Protection)
+app.post('/api/auth/rider-login', authRateLimiter, async (req: Request, res: Response) => {
   try {
     const { identifier, pin, password } = req.body || {};
     const enteredPin = String(pin || password || '').trim();
@@ -286,14 +384,69 @@ app.post('/api/auth/rider-login', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'Invalid rider credentials. Please check your Rider ID, Email or Phone.' });
     }
 
+    // Check account lockout status
+    const lockout = checkAccountLockout(rider);
+    if (lockout.isLocked) {
+      await recordAuditLog({
+        actorId: rider.riderId,
+        actorName: rider.name,
+        actorRole: 'Rider',
+        action: 'RIDER_LOCKOUT_BLOCKED',
+        affectedEntity: 'Rider',
+        entityRef: rider.riderId,
+        ipAddress: getClientIp(req),
+        metadata: { remainingMinutes: lockout.remainingMinutes }
+      });
+      return res.status(423).json({
+        error: `Rider account is temporarily locked due to too many failed login attempts. Please try again in ${lockout.remainingMinutes} minute${lockout.remainingMinutes > 1 ? 's' : ''} or contact dispatch administration.`,
+        locked: true,
+        remainingMinutes: lockout.remainingMinutes
+      });
+    }
+
     if (rider.status === 'Suspended') {
       return res.status(403).json({ error: 'Rider account is suspended. Contact dispatch administration.' });
     }
 
     const isMatch = await comparePassword(enteredPin, rider.passwordHash);
     if (!isMatch) {
-      return res.status(401).json({ error: 'Incorrect 4-digit PIN. Please verify your login credentials.' });
+      const attempts = (rider.failedLoginAttempts || 0) + 1;
+      rider.failedLoginAttempts = attempts;
+
+      if (attempts >= MAX_FAILED_LOGIN_ATTEMPTS) {
+        rider.lockUntil = new Date(Date.now() + LOCKOUT_DURATION_MS);
+        await rider.save();
+
+        await recordAuditLog({
+          actorId: rider.riderId,
+          actorName: rider.name,
+          actorRole: 'Rider',
+          action: 'RIDER_ACCOUNT_LOCKED',
+          affectedEntity: 'Rider',
+          entityRef: rider.riderId,
+          ipAddress: getClientIp(req),
+          metadata: { failedAttempts: attempts, durationMinutes: LOCKOUT_DURATION_MINUTES }
+        });
+
+        return res.status(423).json({
+          error: `Rider account has been locked for ${LOCKOUT_DURATION_MINUTES} minutes due to ${MAX_FAILED_LOGIN_ATTEMPTS} consecutive incorrect PIN attempts.`,
+          locked: true,
+          remainingMinutes: LOCKOUT_DURATION_MINUTES
+        });
+      } else {
+        await rider.save();
+        const remainingAttempts = MAX_FAILED_LOGIN_ATTEMPTS - attempts;
+        return res.status(401).json({
+          error: `Incorrect 4-digit PIN. ${remainingAttempts} attempt${remainingAttempts > 1 ? 's' : ''} remaining before account lockout.`,
+          remainingAttempts
+        });
+      }
     }
+
+    // Login successful: reset failed login attempts & unlock
+    rider.failedLoginAttempts = 0;
+    rider.lockUntil = null;
+    await rider.save();
 
     const mustChangePin = rider.mustChangePin ?? true;
 
@@ -312,7 +465,7 @@ app.post('/api/auth/rider-login', async (req: Request, res: Response) => {
       action: 'RIDER_LOGIN_SUCCESS',
       affectedEntity: 'Rider',
       entityRef: rider.riderId,
-      ipAddress: req.ip,
+      ipAddress: getClientIp(req),
     });
 
     const greeting = getNigerianGreeting();
@@ -335,12 +488,13 @@ app.post('/api/auth/rider-login', async (req: Request, res: Response) => {
       },
     });
   } catch (err: any) {
-    return res.status(500).json({ error: 'Rider authentication error: ' + err.message });
+    const isProd = process.env.NODE_ENV === 'production';
+    return res.status(500).json({ error: isProd ? 'Rider authentication service unavailable.' : 'Rider authentication error: ' + err.message });
   }
 });
 
-// 2. Rider Change 4-Digit PIN (First login or self-service update)
-app.post('/api/auth/rider-change-pin', async (req: Request, res: Response) => {
+// 2. Rider Change 4-Digit PIN (First login or self-service update, rate-limited)
+app.post('/api/auth/rider-change-pin', authRateLimiter, async (req: Request, res: Response) => {
   try {
     const { riderId, currentPin, newPin } = req.body || {};
     const cleanNewPin = String(newPin || '').trim();
@@ -656,6 +810,9 @@ app.post('/api/bookings', async (req: Request, res: Response) => {
 /* ==========================================================================
    ADMIN DASHBOARD & BOOKINGS MANAGEMENT
    ========================================================================== */
+
+// Protect ALL internal portal routes with JWT authentication & RBAC
+app.use('/api/portal', requireAuth);
 
 // 1. Live Overview Statistics
 app.get('/api/portal/dashboard', async (_req: Request, res: Response) => {
@@ -2464,7 +2621,7 @@ app.patch('/api/portal/users/:id', async (req: Request, res: Response) => {
     const { id } = req.params;
     await connectToDatabase();
     const isObjectId = mongoose.isValidObjectId(id);
-    const query = isObjectId ? { $or: [{ userId: id }, { _id: id }] } : { userId: id };
+    const query = isObjectId ? { $or: [{ userId: id }, { _id: id }, { email: id }] } : { $or: [{ userId: id }, { email: id }] };
     const targetUser = await UserModel.findOne(query);
     if (!targetUser) return res.status(404).json({ error: 'User not found.' });
 
@@ -2516,7 +2673,7 @@ app.delete('/api/portal/users/:id', async (req: Request, res: Response) => {
     const { id } = req.params;
     await connectToDatabase();
     const isObjectId = mongoose.isValidObjectId(id);
-    const query = isObjectId ? { $or: [{ userId: id }, { _id: id }] } : { userId: id };
+    const query = isObjectId ? { $or: [{ userId: id }, { _id: id }, { email: id }] } : { $or: [{ userId: id }, { email: id }] };
     const targetUser = await UserModel.findOne(query);
     if (!targetUser) return res.status(404).json({ error: 'User not found.' });
 
@@ -2555,11 +2712,11 @@ app.post('/api/portal/users/:id/change-password', async (req: Request, res: Resp
 
     await connectToDatabase();
     const isObjectId = mongoose.isValidObjectId(id);
-    const query = isObjectId ? { $or: [{ userId: id }, { _id: id }] } : { userId: id };
+    const query = isObjectId ? { $or: [{ userId: id }, { _id: id }, { email: id }] } : { $or: [{ userId: id }, { email: id }] };
     const passHash = await hashPassword(String(password).trim());
     const user = await UserModel.findOneAndUpdate(
       query,
-      { $set: { passwordHash: passHash } },
+      { $set: { passwordHash: passHash, failedLoginAttempts: 0, lockUntil: null } },
       { new: true, select: '-passwordHash' }
     );
     if (!user) return res.status(404).json({ error: 'User not found.' });
@@ -2763,7 +2920,7 @@ const handleAdminRiderPinReset = async (req: Request, res: Response) => {
     const passHash = await hashPassword(inputPin);
     const rider = await RiderModel.findOneAndUpdate(
       query,
-      { $set: { passwordHash: passHash, mustChangePin: true, pinChangedAt: new Date() } },
+      { $set: { passwordHash: passHash, mustChangePin: true, pinChangedAt: new Date(), failedLoginAttempts: 0, lockUntil: null } },
       { new: true }
     );
     if (!rider) return res.status(404).json({ error: 'Rider not found.' });
@@ -2961,6 +3118,22 @@ app.get('/api/health', async (_req: Request, res: Response) => {
     status: 'ok',
     database: conn ? 'MongoDB connected' : 'Memory fallback mode',
     timestamp: new Date().toISOString(),
+  });
+});
+
+// 404 Handler for undefined API routes
+app.use((req: Request, res: Response) => {
+  res.status(404).json({ error: `Resource not found: ${req.method} ${req.originalUrl || req.url}` });
+});
+
+// Centralized Production Error Handler (Hides internal stack traces in production)
+app.use((err: any, req: Request, res: Response, _next: express.NextFunction) => {
+  const isProd = process.env.NODE_ENV === 'production';
+  console.error(`[UNHANDLED SERVER ERROR] ${req.method} ${req.url}:`, isProd ? err.message : err);
+  if (res.headersSent) return;
+  return res.status(err.status || 500).json({
+    error: isProd ? 'An internal server error occurred. Please contact support.' : (err.message || 'Internal Server Error'),
+    timestamp: new Date().toISOString()
   });
 });
 

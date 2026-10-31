@@ -119,6 +119,147 @@ export function validatePhone(phone: unknown): string | null {
   return clean;
 }
 
+/* ==========================================================================
+   OWASP SECURITY HEADERS MIDDLEWARE
+   ========================================================================== */
+export function securityHeadersMiddleware(_req: Request, res: Response, next: NextFunction) {
+  // 1. Remove technology fingerprinting (Express / Node.js)
+  res.removeHeader('X-Powered-By');
+
+  // 2. Prevent Clickjacking Attacks
+  res.setHeader('X-Frame-Options', 'DENY');
+
+  // 3. Prevent MIME-type confusion / sniffing attacks
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  // 4. Cross-Site Scripting (XSS) filter enforcement
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+
+  // 5. Strict Referrer Policy
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+
+  // 6. Strict Transport Security (HSTS) - enforce HTTPS in production
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+
+  // 7. Permissions Policy: Disable unused device sensors & payment APIs
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), payment=(), geolocation=(self)');
+
+  // 8. Content Security Policy (CSP)
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https: res.cloudinary.com; connect-src 'self' https:;"
+  );
+
+  next();
+}
+
+/* ==========================================================================
+   EXPOSED FILE ACCESS PROTECTION (Prevent access to .env, .git, config, keys)
+   ========================================================================== */
+const FORBIDDEN_FILE_PATTERN = /(\.env|\.git|\.aws|\.ssh|\.bak|\.config|\.ya?ml|\.jsonl|\.sqlite|\.log|id_rsa|\.key|\.pem|\.crt)/i;
+
+export function exposedFileProtectionMiddleware(req: Request, res: Response, next: NextFunction) {
+  const urlPath = req.url || '';
+  if (FORBIDDEN_FILE_PATTERN.test(urlPath) || urlPath.includes('..')) {
+    console.warn(`[SECURITY ALERT - BLOCKED FILE SCAN]: Forbidden path access attempt "${urlPath}" from IP ${getClientIp(req)}`);
+    return res.status(403).json({
+      error: 'Access denied: The requested resource is protected and cannot be accessed.'
+    });
+  }
+  next();
+}
+
+/* ==========================================================================
+   IP RATE LIMITING FOR AUTHENTICATION & LOGIN ENDPOINTS
+   ========================================================================== */
+export const AUTH_MAX_ATTEMPTS_PER_IP = 20;
+export const AUTH_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes window
+
+interface RateLimitEntry {
+  count: number;
+  firstAttemptTime: number;
+  resetTime: number;
+}
+
+const authIpRateLimitMap = new Map<string, RateLimitEntry>();
+
+// Automatic background cleanup of expired rate limit entries every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of authIpRateLimitMap.entries()) {
+    if (now > entry.resetTime) {
+      authIpRateLimitMap.delete(ip);
+    }
+  }
+}, 5 * 60 * 1000).unref();
+
+export function getClientIp(req: Request): string {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string') {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.ip || req.socket.remoteAddress || 'unknown';
+}
+
+export function authRateLimiter(req: Request, res: Response, next: NextFunction) {
+  const ip = getClientIp(req);
+  const now = Date.now();
+  let entry = authIpRateLimitMap.get(ip);
+
+  if (!entry || now > entry.resetTime) {
+    entry = {
+      count: 1,
+      firstAttemptTime: now,
+      resetTime: now + AUTH_RATE_LIMIT_WINDOW_MS,
+    };
+    authIpRateLimitMap.set(ip, entry);
+  } else {
+    entry.count++;
+  }
+
+  const remaining = Math.max(0, AUTH_MAX_ATTEMPTS_PER_IP - entry.count);
+  const resetSeconds = Math.ceil((entry.resetTime - now) / 1000);
+
+  res.setHeader('X-RateLimit-Limit', AUTH_MAX_ATTEMPTS_PER_IP);
+  res.setHeader('X-RateLimit-Remaining', remaining);
+  res.setHeader('X-RateLimit-Reset', Math.ceil(entry.resetTime / 1000));
+
+  if (entry.count > AUTH_MAX_ATTEMPTS_PER_IP) {
+    const minutesLeft = Math.ceil(resetSeconds / 60);
+    res.setHeader('Retry-After', resetSeconds);
+    console.warn(`[SECURITY ALERT - LOGIN RATE LIMIT EXCEEDED]: IP ${ip} exceeded ${AUTH_MAX_ATTEMPTS_PER_IP} attempts.`);
+    return res.status(429).json({
+      error: `Too many login attempts from this IP address. For your security, access is restricted. Please try again in ${minutesLeft} minute${minutesLeft > 1 ? 's' : ''}.`,
+      retryAfter: resetSeconds,
+      code: 'IP_RATE_LIMIT_EXCEEDED'
+    });
+  }
+
+  next();
+}
+
+/* ==========================================================================
+   ACCOUNT LOCKOUT CONFIGURATION & HELPERS
+   ========================================================================== */
+export const MAX_FAILED_LOGIN_ATTEMPTS = 5;
+export const LOCKOUT_DURATION_MINUTES = 15;
+export const LOCKOUT_DURATION_MS = LOCKOUT_DURATION_MINUTES * 60 * 1000;
+
+export function checkAccountLockout(account: { lockUntil?: Date | null; failedLoginAttempts?: number }): {
+  isLocked: boolean;
+  remainingMinutes: number;
+} {
+  if (account.lockUntil) {
+    const lockTime = new Date(account.lockUntil).getTime();
+    const now = Date.now();
+    if (lockTime > now) {
+      const remainingMinutes = Math.ceil((lockTime - now) / 60000);
+      return { isLocked: true, remainingMinutes };
+    }
+  }
+  return { isLocked: false, remainingMinutes: 0 };
+}
+
 /**
  * Global Express Security Middleware
  * Inspects all requests (body, query, params) for NoSQL operator and SQL injections
